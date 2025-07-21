@@ -592,25 +592,6 @@ crosshair.ZIndex = 4 -- 确保在最上层
 crosshair.Parent = screenGui
 print("StaminaUI: 已创建十字准星。")
 
--- 新增：左下角提示文本
-local hintText = Instance.new("TextLabel")
-hintText.Name = "HintText"
--- 提示文本大小调整为原先的 3 倍
-hintText.Size = UDim2.new(0, 200 * 3, 0, 30 * 3) -- 适当大小
-hintText.Position = UDim2.new(0, 10, 1, -10) -- 左下角，距离边缘10像素
-hintText.AnchorPoint = Vector2.new(0, 1) -- 锚点在左下角
-hintText.BackgroundTransparency = 1
-hintText.TextColor3 = Color3.new(1, 1, 1) -- 白色文本
-hintText.TextScaled = true
-hintText.TextXAlignment = Enum.TextXAlignment.Left
-hintText.TextYAlignment = Enum.TextYAlignment.Bottom
-hintText.Font = Enum.Font.SourceSansBold
--- 提示文本内容，移除视角切换提示
-hintText.Text = "SHIFT奔跑\nCRTL 衝刺\nCAPS LOCK 脫離視窗"
-hintText.ZIndex = 3
-hintText.Parent = screenGui
-print("StaminaUI: 已创建左下角提示文本。")
-
 -- 获取RemoteEvent
 local UpdateStaminaEventSuccess, UpdateStaminaEvent = pcall(function()
 	return ReplicatedStorage:WaitForChild("UpdateStamina", 30) -- 增加超时时间
