@@ -1,7 +1,6 @@
 -- 文件名: StarterPlayer/StarterPlayerScripts/StaminaUI.lua
 -- 这是一个整合了体力、第一人称可见性和摄像机控制的客户端脚本。
 -- 目标：实现正常走路时使用Roblox默认第一人称，眩晕时应用自定义晃动，并支持自定义物品列表。
-
 task.wait(0.2) -- 增加等待时间，给脚本更多初始化时间 (从0.5s增加到1.0s)
 print("StaminaUI 脚本开始执行！")
 
@@ -18,7 +17,6 @@ local humanoid
 local animator -- 用于管理动画的Animator
 local rollAnimation -- 翻滚动画实例
 local rollAnimationTrack -- 翻滚动画轨道
-local head -- 新增：存储角色头部部件
 
 -- 体力设置 (客户端副本，用于显示)
 local currentStamina = 100
@@ -33,10 +31,12 @@ print("StaminaUI: 初始 maxHealth 设置为: " .. maxHealth) -- 调试日志
 
 local SPRINT_SPEED = 24 -- 冲刺时的速度 (默认行走速度是16)
 local DEFAULT_SPEED = 16 -- 默认行走速度
+
 -- 暴冲/冲刺相关参数
 local BURST_SPEED = 60 -- 暴冲时的超高速度
 local BURST_DISTANCE = 9 -- 暴冲的距离 (与原翻滚位移相同)
 local BURST_TIME = BURST_DISTANCE / BURST_SPEED -- 暴冲持续时间
+
 -- 眩晕相关参数
 local STUN_DURATION = 3 -- 眩晕持续时间 (秒)
 local STUN_SPEED_MULTIPLIER = 0.5 -- 眩晕时速度乘数 (50% 速度)
@@ -56,40 +56,8 @@ local isSPressed = false
 local isDPressed = false
 
 -- 摄像机效果变量
-local currentPitch = 0 -- 垂直俯仰角
-local mouseSensitivity = 0.2 -- 鼠标灵敏度，可以调整
-local isCameraLocked = true -- 初始状态为锁定，鼠标控制视角
+local isCameraLocked = true -- 初始状态为锁定，鼠标控制视角 (用于切换默认第一人称/第三人称)
 local stunStartTime = 0 -- 用于眩晕效果的计时器
-
--- 眩晕摄像机参数
-local STUN_SWAY_AMOUNT = 0.07 -- 眩晕左右摇晃幅度
-local STUN_TILT_AMOUNT = 0.05 -- 眩晕前后倾斜幅度
-local STUN_FREQUENCY = 6 -- 眩晕晃动频率
-
--- 摄像机碰撞回退距离 (增加以减少穿透)
-local CAMERA_COLLISION_OFFSET = 0.5 -- 摄像机与墙壁保持的最小距离 (单位：studs)
-
--- Jump camera effect variables
-local currentJumpPitchOffset = 0
-local JUMP_PITCH_AMOUNT = math.rad(10) -- 10 degrees downwards
-local JUMP_PITCH_LERP_SPEED = 8 -- How fast to lerp the jump pitch
-local isJumpingState = false -- Track humanoid jumping state
-
--- <<<<<< 新增：跳跃落地冲击效果变量 >>>>>>
-local currentLandingVerticalOffset = 0
-local LANDING_JOLT_DOWN_AMOUNT = 0.3 -- 摄像机在落地时下沉的幅度 (studs)
-local LANDING_JOLT_REBOUND_AMOUNT = 0.1 -- 摄像机在下沉后向上回弹的幅度 (studs)
-local LANDING_JOLT_REBOUND_LERP_SPEED = 10 -- 摄像机向上回弹的速度
-
--- Head bobbing parameters (adjusted for more noticeable, less smooth feel)
-local bobAmplitudeX = 0.2 -- Increased from 0.15
-local bobAmplitudeY = 0.2 -- Increased from 0.15
-local bobAmplitudeZ = 0.1 -- Increased from 0.08
-local bobFrequencyMultiplier = 4.0 -- Keep same for now
-local headBobTime = 0
-
--- <<<<<< 新增：摄像机相对于头部中心的垂直偏移量 >>>>>>
-local CAMERA_VERTICAL_OFFSET_FROM_HEAD = 0.15 -- 摄像机相对于头部中心向上偏移的距离 (studs)
 
 -- 物品栏选择相关变量
 local currentSlotIndex = 1 -- 当前选中的物品槽位 (1-9)
@@ -102,13 +70,6 @@ local MAX_INVENTORY_SLOTS = 9 -- 最大物品栏槽位数量
 
 -- 存储当前背包和角色中所有工具的列表
 local currentToolsInInventory = {}
-
--- 更新摄像机俯仰角
-local function updatePitch(mouseDeltaY)
-	currentPitch = currentPitch - math.rad(mouseDeltaY * mouseSensitivity)
-	currentPitch = math.clamp(currentPitch, math.rad(-80), math.rad(80)) -- 限制俯仰角在 -80 到 80 度之间
-	return currentPitch
-end
 
 -- <<<<<< 新增辅助函数：获取当前装备的工具 >>>>>>
 local function getEquippedTool()
@@ -126,19 +87,22 @@ end
 local function setupCharacter()
 	-- 等待玩家角色加载或重生
 	character = player.Character or player.CharacterAdded:Wait()
-	if not character then 
+	if not character then
 		warn("StaminaUI: 无法获取玩家角色！脚本可能无法正常工作。")
-		return 
+		return
 	end
 	print("StaminaUI: 已获取玩家角色: " .. character.Name)
 
 	-- 等待Humanoid加载
 	humanoid = character:WaitForChild("Humanoid")
-	if not humanoid then 
+	if not humanoid then
 		warn("StaminaUI: 无法获取Humanoid！脚本可能无法正常工作。")
-		return 
+		return
 	end
 	print("StaminaUI: 已获取Humanoid。")
+
+	-- <<<<<< 关键修正：添加短暂等待，确保Humanoid属性完全初始化 >>>>>>
+	task.wait(0.05) -- 给Roblox一个短暂的时间来初始化Humanoid的属性
 
 	-- <<<<<< 修复：保存原始跳跃力 >>>>>>
 	originalJumpPower = humanoid.JumpPower
@@ -151,14 +115,6 @@ local function setupCharacter()
 		animator.Parent = humanoid
 	end
 	print("StaminaUI: 已获取/创建Animator。")
-
-	-- 获取头部部件
-	head = character:WaitForChild("Head")
-	if not head then
-		warn("StaminaUI: 无法获取Head部件！摄像机定位可能不准确。")
-	else
-		print("StaminaUI: 已获取Head部件。Head.Size: " .. tostring(head.Size))
-	end
 
 	-- 加载翻滚动画 (只加载一次)
 	if not rollAnimation then
@@ -180,7 +136,6 @@ local function setupCharacter()
 	local success, message = pcall(function()
 		rollAnimationTrack = animator:LoadAnimation(rollAnimation)
 	end)
-
 	if not success then
 		warn("StaminaUI: 无法加载翻滚动画轨道！错误信息: " .. message)
 		rollAnimationTrack = nil
@@ -207,93 +162,63 @@ local function setupCharacter()
 		print("StaminaUI: 已停止所有非默认动画。")
 	end
 
-	-- <<<<<< 修改：使头部和附件可见 >>>>>>
-	print("StaminaUI: 正在设置第一人称可见性 (使头部和附件可见)...")
-
-	-- 首先确保所有部件都是可见的 (LocalTransparencyModifier = 0)
-	-- 这样可以重置之前可能设置的透明度
-	for _, part in ipairs(character:GetDescendants()) do
-		if part:IsA("BasePart") or part:IsA("MeshPart") then
-			part.LocalTransparencyModifier = 0
-		end
-	end
-
-	-- 确保头部及其所有子部件（包括面部、头发网格等）可见
-	local head = character:FindFirstChild("Head")
-	if head then
-		head.LocalTransparencyModifier = 0 -- 使头部对本地玩家可见
-		-- 确保头部内部的所有子部件（如面部、头发网格）也可见
-		for _, child in ipairs(head:GetChildren()) do
-			if child:IsA("BasePart") or child:IsA("MeshPart") then
-				child.LocalTransparencyModifier = 0
-			end
-		end
-		print("StaminaUI: 头部已设置为可见。")
-	end
-
-	-- 确保所有附件（包括头发、帽子、肩膀配件等）可见
-	for _, accessory in ipairs(character:GetChildren()) do
-		if accessory:IsA("Accessory") then
-			local handle = accessory:FindFirstChildOfClass("BasePart")
-			if handle then
-				handle.LocalTransparencyModifier = 0 -- 使附件对本地玩家可见
-			end
-			print("StaminaUI: 附件 '" .. accessory.Name .. "' 已设置为可见。")
-		end
-	end
-	print("StaminaUI: 第一人称可见性设置完成。")
-
-	-- 摄像机初始化：始终设置为Scriptable，我们完全控制
-	-- 初始设置鼠标行为 (使用 task.defer 确保 UserInputService 已准备好)
+	-- 摄像机初始化：始终设置为Custom，我们让Roblox控制
 	task.defer(function()
-		if isCameraLocked then
-			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-			UserInputService.MouseIconEnabled = false
-			print("StaminaUI: 初始鼠标行为设置为锁定和隐藏。")
+		if humanoid then -- 确保humanoid存在
+			if isCameraLocked then
+				UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+				UserInputService.MouseIconEnabled = false
+				print("StaminaUI: 初始鼠标行为设置为锁定和隐藏。")
+			else
+				UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+				UserInputService.MouseIconEnabled = true
+				print("StaminaUI: 初始鼠标行为设置为默认和显示。")
+			end
 		else
-			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-			UserInputService.MouseIconEnabled = true
-			print("StaminaUI: 初始鼠标行为设置为默认和显示。")
+			warn("StaminaUI: Humanoid is nil during initial camera setup in task.defer.")
 		end
 	end)
 
-	-- 始终设置为Scriptable，我们完全控制摄像机
-	Camera.CameraType = Enum.CameraType.Scriptable
-	Camera.CameraSubject = nil -- 明确设置为nil，确保我们完全控制摄像机
+	Camera.CameraType = Enum.CameraType.Custom -- 始终设置为Custom，让Roblox控制摄像机
+	Camera.CameraSubject = humanoid -- 设置Subject为Humanoid
 	Camera.FieldOfView = 70 -- 恢复默认FOV
-	print("StaminaUI: 摄像机初始设置为 Scriptable 类型，Subject 为 nil。")
+	print("StaminaUI: 摄像机初始设置为 Custom 类型，Subject 为 Humanoid。")
 
-	-- 确保 Humanoid.AutoRotate 为 false，以便手动控制角色旋转
 	if humanoid then
-		humanoid.AutoRotate = false
+		humanoid.AutoRotate = false -- <<<<<< 关键修改：禁用Humanoid的自动旋转，以便我们手动控制 >>>>>>
 		print("StaminaUI: Humanoid.AutoRotate 已禁用。")
-
-		-- Connect to Humanoid StateChanged for jump effect
-		humanoid.StateChanged:Connect(function(oldState, newState)
-			if newState == Enum.HumanoidStateType.Jumping then
-				isJumpingState = true
-				print("StaminaUI: Humanoid state changed to Jumping.")
-			elseif newState == Enum.HumanoidStateType.Landed then
-				isJumpingState = false
-				print("StaminaUI: Humanoid state changed to Landed.")
-				-- <<<<<< 新增：触发落地冲击效果 >>>>>>
-				currentLandingVerticalOffset = -LANDING_JOLT_DOWN_AMOUNT -- 立即设置到最大下沉量
-			end
-		end)
 	end
 
 	-- <<<<<< 确保 maxHealth 从 Humanoid 获取 >>>>>>
 	maxHealth = humanoid.MaxHealth
 	print("StaminaUI: Humanoid.MaxHealth 已获取并设置为 maxHealth: " .. maxHealth)
-
 	print("StaminaUI: 角色变量和摄像机已设置/重置。")
+
 	-- 隐藏左上角默认UI图标 (聊天和背包/菜单)
 	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false)
 	-- <<<<<< 修改：禁用 Roblox 默认背包/物品列表 >>>>>>
-	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false) 
+	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
 	-- 禁用默认生命值显示
 	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Health, false)
 	print("StaminaUI: 已禁用默认核心GUI (聊天、背包和生命值)。")
+
+	-- <<<<<< 移除 Humanoid.AncestryChanged 事件连接，因为它与摄像机缩放设置相关 >>>>>>
+	-- local ancestryChangedConnection
+	-- ancestryChangedConnection = humanoid.AncestryChanged:Connect(function(child, parent)
+	-- 	if parent == workspace and child == humanoid then
+	-- 		print("StaminaUI: Humanoid AncestryChanged: Humanoid已添加到Workspace。")
+	-- 		setCameraZoomProperties() -- 在Humanoid完全加载到Workspace后设置摄像机缩放
+	-- 		if ancestryChangedConnection then
+	-- 			ancestryChangedConnection:Disconnect() -- 只执行一次
+	-- 			ancestryChangedConnection = nil
+	-- 		end
+	-- 	end
+	-- end)
+	-- -- 如果Humanoid已经存在于Workspace中，则立即设置
+	-- if humanoid.Parent == workspace then
+	-- 	print("StaminaUI: Humanoid已在Workspace中，立即设置摄像机缩放。")
+	-- 	setCameraZoomProperties()
+	-- end
 end
 
 -- 处理角色重生事件：当玩家角色重生时，重新设置角色变量
@@ -308,9 +233,9 @@ setupCharacter()
 
 -- <<<<<< 修复 LobbyClientUI 错误：等待 PlayerGui >>>>>>
 local playerGui = player:WaitForChild("PlayerGui", 10)
-if not playerGui then 
+if not playerGui then
 	warn("StaminaUI: 无法获取PlayerGui！脚本终止。")
-	return 
+	return
 end
 print("StaminaUI: 已获取PlayerGui。")
 
@@ -326,9 +251,9 @@ local inventoryFrame = Instance.new("Frame")
 inventoryFrame.Name = "InventoryFrame"
 -- 9个槽位 (横向排列): 9 * 50 (槽位大小) + 8 * 5 (槽位间距) + 2 * 5 (边框内边距) = 450 + 40 + 10 = 500
 -- 高度：1 * 50 (槽位大小) + 2 * 5 (边框内边距) = 50 + 10 = 60
-inventoryFrame.Size = UDim2.new(0, 500, 0, 60) 
+inventoryFrame.Size = UDim2.new(0, 500, 0, 60)
 -- 位置：水平居中，距离底部10像素
-inventoryFrame.Position = UDim2.new(0.5, 0, 1, -10) 
+inventoryFrame.Position = UDim2.new(0.5, 0, 1, -10)
 inventoryFrame.AnchorPoint = Vector2.new(0.5, 1) -- 锚点在底部中心
 inventoryFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 40) -- 深蓝灰色背景
 inventoryFrame.BackgroundTransparency = 0.15 -- 略微透明
@@ -492,7 +417,7 @@ local staminaWarningText = Instance.new("TextLabel")
 staminaWarningText.Name = "StaminaWarningText"
 staminaWarningText.Size = UDim2.new(0, 500, 0, 20) -- 与体力条同宽，高20
 -- 位置：位于体力条上方5像素 (相对体力条的底部锚点)
-staminaWarningText.Position = UDim2.new(staminaFrame.Position.X.Scale, staminaFrame.Position.X.Offset, staminaFrame.Position.Y.Scale, staminaFrame.Position.Y.Offset - staminaFrame.Size.Y.Offset - 5) 
+staminaWarningText.Position = UDim2.new(staminaFrame.Position.X.Scale, staminaFrame.Position.X.Offset, staminaFrame.Position.Y.Scale, staminaFrame.Position.Y.Offset - staminaFrame.Size.Y.Offset - 5)
 staminaWarningText.AnchorPoint = Vector2.new(0.5, 1) -- 锚点在底部中心，与体力条对齐
 staminaWarningText.BackgroundTransparency = 1
 staminaWarningText.TextColor3 = Color3.new(1, 0, 0) -- 红色文本
@@ -565,7 +490,7 @@ healthText.TextXAlignment = Enum.TextXAlignment.Center
 healthText.TextYAlignment = Enum.TextYAlignment.Center
 healthText.Font = Enum.Font.SourceSansBold
 healthText.Text = "生命: 100/100"
-healthText.ZIndex = 2
+staminaText.ZIndex = 2
 healthText.Parent = healthFrame
 print("StaminaUI: 已创建HealthText。")
 
@@ -580,23 +505,43 @@ cornerImage.Image = "rbxassetid://0" -- 请替换为你的图片ID，例如 "rbx
 cornerImage.Parent = screenGui
 print("StaminaUI: 已创建右下角装饰图案占位符。")
 
--- 新增：十字准星
-local crosshair = Instance.new("Frame")
-crosshair.Name = "Crosshair"
-crosshair.Size = UDim2.new(0, 4, 0, 4) -- 小方块作为准星
-crosshair.Position = UDim2.new(0.5, 0, 0.5, 0) -- 屏幕中心
-crosshair.AnchorPoint = Vector2.new(0.5, 0.5) -- 锚点在中心
-crosshair.BackgroundColor3 = Color3.new(1, 1, 1) -- 白色
-crosshair.BorderSizePixel = 0
-crosshair.ZIndex = 4 -- 确保在最上层
-crosshair.Parent = screenGui
-print("StaminaUI: 已创建十字准星。")
+-- <<<<<< 新增：十字準星 >>>>>>
+local crosshairFrame = Instance.new("Frame")
+crosshairFrame.Name = "CrosshairFrame"
+crosshairFrame.Size = UDim2.new(0, 20, 0, 20) -- 准星的整体大小
+crosshairFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+crosshairFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+crosshairFrame.BackgroundTransparency = 1 -- 使父框架透明
+crosshairFrame.BorderSizePixel = 0
+crosshairFrame.Parent = screenGui
+crosshairFrame.ZIndex = 5 -- 确保在最上层
+
+-- 水平条
+local horizontalBar = Instance.new("Frame")
+horizontalBar.Name = "HorizontalBar"
+horizontalBar.Size = UDim2.new(1, 0, 0, 2) -- 填充父框架宽度，2像素高
+horizontalBar.Position = UDim2.new(0.5, 0, 0.5, 0)
+horizontalBar.AnchorPoint = Vector2.new(0.5, 0.5)
+horizontalBar.BackgroundColor3 = Color3.new(1, 1, 1) -- 白色
+horizontalBar.BorderSizePixel = 0
+horizontalBar.Parent = crosshairFrame
+
+-- 垂直条
+local verticalBar = Instance.new("Frame")
+verticalBar.Name = "VerticalBar"
+verticalBar.Size = UDim2.new(0, 2, 1, 0) -- 2像素宽，填充父框架高度
+verticalBar.Position = UDim2.new(0.5, 0, 0.5, 0)
+verticalBar.AnchorPoint = Vector2.new(0.5, 0.5)
+verticalBar.BackgroundColor3 = Color3.new(1, 1, 1) -- 白色
+verticalBar.BorderSizePixel = 0
+verticalBar.Parent = crosshairFrame
+
+print("StaminaUI: 已创建十字準星。")
 
 -- 获取RemoteEvent
 local UpdateStaminaEventSuccess, UpdateStaminaEvent = pcall(function()
 	return ReplicatedStorage:WaitForChild("UpdateStamina", 30) -- 增加超时时间
 end)
-
 if not UpdateStaminaEventSuccess or not UpdateStaminaEvent then
 	warn("StaminaUI: 无法获取 ReplicatedStorage.UpdateStamina RemoteEvent。请检查ReplicatedStorage中是否存在名为'UpdateStamina'的RemoteEvent。脚本终止。")
 	return
@@ -614,7 +559,6 @@ UpdateStaminaEvent.OnClientEvent:Connect(function(newStamina, newMaxStamina)
 		maxStamina = 100 -- 默认值，以防万一
 		warn("StaminaUI: newMaxStamina 为 nil 或 0，已使用默认值 100。")
 	end
-
 	local percent = currentStamina / maxStamina
 	staminaBar:TweenSize(UDim2.new(percent, 0, 1, 0), "Out", "Quad", 0.1, true)
 	staminaText.Text = string.format("体力: %d/%d", math.floor(currentStamina), maxStamina)
@@ -653,7 +597,6 @@ UpdateStaminaEvent.OnClientEvent:Connect(function(newStamina, newMaxStamina)
 			humanoid:Move(Vector3.new(0,0,0)) -- 强制停止移动
 			print("StaminaUI: 体力耗尽，已强制停止角色移动并清除按键状态。")
 		end
-
 		-- 模拟极短的W键检测来刷新状态 (在体力耗尽时立即执行)
 		isWPressed = true
 		if humanoid then
@@ -670,27 +613,23 @@ UpdateStaminaEvent.OnClientEvent:Connect(function(newStamina, newMaxStamina)
 		isSPressed = false
 		isDPressed = false
 
-
 		if not isStunned then -- 如果尚未眩晕
 			isStunned = true
 			stunStartTime = tick()
-			if humanoid then 
-				humanoid.WalkSpeed = DEFAULT_SPEED * STUN_SPEED_MULTIPLIER 
+			if humanoid then
+				humanoid.WalkSpeed = DEFAULT_SPEED * STUN_SPEED_MULTIPLIER
 				humanoid.JumpPower = 0 -- 眩晕时禁用跳跃
 				print("StaminaUI: 眩晕时已禁用跳跃。")
 			end -- 速度减少50%
 			print("StaminaUI: 体力耗尽！玩家眩晕 " .. STUN_DURATION .. " 秒，速度减少50%。")
-
-			-- 眩晕开始：摄像机类型已是Scriptable，无需更改
-			print("StaminaUI: 眩晕开始，摄像机类型保持为 Scriptable。")
+			print("StaminaUI: 眩晕开始，摄像机类型保持为 Custom。")
 
 			-- 延迟后解除眩晕
 			task.delay(STUN_DURATION, function()
 				if isStunned then -- 只有当眩晕状态仍然激活时才解除
 					isStunned = false
 					print("StaminaUI: 眩晕解除 (通过延迟)。")
-					-- jiggleSpeedState() -- 眩晕解除时执行短暂速度切换 (此函数未定义，已注释)
-					if humanoid then 
+					if humanoid then
 						humanoid.JumpPower = originalJumpPower -- 眩晕解除时恢复原始跳跃力
 						print("StaminaUI: 眩晕解除时已恢复原始跳跃力: " .. originalJumpPower)
 					end
@@ -698,7 +637,6 @@ UpdateStaminaEvent.OnClientEvent:Connect(function(newStamina, newMaxStamina)
 			end)
 		end
 	end
-
 	-- 警告文本显示逻辑
 	if currentStamina <= 20 and currentStamina > 0 then
 		staminaWarningText.Visible = true
@@ -711,7 +649,6 @@ end)
 local RequestStaminaConsumptionEventSuccess, RequestStaminaConsumptionEvent = pcall(function()
 	return ReplicatedStorage:WaitForChild("RequestStaminaConsumption", 30) -- 增加超时时间
 end)
-
 if not RequestStaminaConsumptionEventSuccess or not RequestStaminaConsumptionEvent then
 	warn("StaminaUI: 无法获取 ReplicatedStorage.RequestStaminaConsumption RemoteEvent。冲刺功能和翻滚功能可能无法正常工作。请检查ReplicatedStorage中是否存在名为'RequestStaminaConsumption'的RemoteEvent。脚本终止。")
 	return
@@ -726,7 +663,6 @@ local function updateHealthUI(newHealth)
 	healthBar:TweenSize(UDim2.new(percent, 0, 1, 0), "Out", "Quad", 0.1, true)
 	healthText.Text = string.format("生命: %d/%d", math.floor(currentHealth), math.floor(maxHealth)) -- <<<<<< 修正：使用 maxHealth 并对 maxHealth 进行取整
 	print("StaminaUI: 更新生命值UI: " .. currentHealth .. "/" .. maxHealth) -- 调试日志
-
 	-- 生命值条始终为红色
 	healthBar.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2) -- 红色
 end
@@ -740,17 +676,15 @@ if humanoid then
 	updateHealthUI(humanoid.Health)
 end
 
-
 -- 暴冲函数 (原翻滚函数)
 local function doBurst()
 	print("StaminaUI: doBurst 函数被调用。")
 	-- 增加对 humanoid 的 nil 检查，以及眩晕状态检查
 	-- 只有在不暴冲、体力充足、角色在移动且不眩晕时才能暴冲
-	if isRolling or not canRoll or (not humanoid or humanoid.MoveDirection.Magnitude == 0) or isStunned then 
+	if isRolling or not canRoll or (not humanoid or humanoid.MoveDirection.Magnitude == 0) or isStunned then
 		print("StaminaUI: 无法暴冲。isRolling: " .. tostring(isRolling) .. ", canRoll: " .. tostring(canRoll) .. ", MoveDirection.Magnitude: " .. (humanoid and humanoid.MoveDirection.Magnitude or 'nil humanoid') .. ", isStunned: " .. tostring(isStunned))
-		return 
+		return
 	end
-
 	isRolling = true -- 标记为暴冲状态
 
 	-- 消耗体力：通过RemoteEvent请求服务器消耗
@@ -758,11 +692,11 @@ local function doBurst()
 	print("StaminaUI: 已向服务器发送暴冲体力消耗请求。消耗量: " .. ROLL_STAMINA_COST)
 
 	local rootPart = character:WaitForChild("HumanoidRootPart")
-	if not rootPart then 
+	if not rootPart then
 		warn("StaminaUI: 无法获取HumanoidRootPart进行暴冲！")
 		isRolling = false
 		if humanoid then humanoid.WalkSpeed = DEFAULT_SPEED end
-		return 
+		return
 	end
 	print("StaminaUI: 获取到HumanoidRootPart。")
 
@@ -781,7 +715,6 @@ local function doBurst()
 
 	-- 临时阻塞输入，防止在暴冲期间进行其他操作
 	isInputBlocked = true
-
 	task.wait(BURST_TIME) -- 等待暴冲持续时间
 
 	isRolling = false -- 暴冲结束
@@ -806,7 +739,6 @@ local function doBurst()
 end
 
 -- <<<<<< 物品栏选择逻辑 >>>>>>
-
 -- 辅助函数：获取玩家背包和角色中所有工具的列表
 local function getAllToolsInInventory()
 	local tools = {}
@@ -840,7 +772,6 @@ local function updateInventoryUI()
 			uiStroke.Thickness = DEFAULT_STROKE_THICKNESS -- 默认边框粗细
 		end
 		slotFrame.BackgroundTransparency = 0.1 -- 默认透明度
-
 		local itemIcon = slotFrame:FindFirstChild("ItemIcon")
 		local itemNameLabel = slotFrame:FindFirstChild("ItemNameLabel")
 		if itemIcon then itemIcon.Image = "rbxassetid://0" end
@@ -855,11 +786,9 @@ local function updateInventoryUI()
 	for i = 1, MAX_INVENTORY_SLOTS do -- 循环遍历所有9个槽位
 		local slotFrame = inventorySlots[i]
 		local tool = currentToolsInInventory[i] -- 尝试获取对应槽位的工具
-
 		if slotFrame then
 			local itemIcon = slotFrame:FindFirstChild("ItemIcon")
 			local itemNameLabel = slotFrame:FindFirstChild("ItemNameLabel")
-
 			if tool then -- 如果有工具，则显示工具信息
 				if itemIcon then
 					itemIcon.Image = tool.TextureId or "rbxassetid://0" -- 使用工具的TextureId或默认图标
@@ -873,7 +802,6 @@ local function updateInventoryUI()
 				if itemNameLabel then itemNameLabel.Text = "" end
 				print("StaminaUI: 槽位 " .. i .. " 没有工具。") -- 新增调试
 			end
-
 			-- 高亮当前选中的槽位 (无论是否有工具)
 			if i == currentSlotIndex then
 				local uiStroke = slotFrame:FindFirstChild("SlotStroke")
@@ -894,12 +822,9 @@ end
 -- 装备指定槽位的工具
 local function equipToolInSlot(slotIndex)
 	print("StaminaUI: equipToolInSlot 函数被调用，尝试装备槽位: " .. slotIndex) -- 新增调试
-
 	local numTools = #currentToolsInInventory
 	local toolToEquip = currentToolsInInventory[slotIndex] -- 尝试获取对应槽位的工具
-
 	local currentlyEquipped = getEquippedTool()
-
 	if toolToEquip then -- 如果该槽位有工具
 		print("StaminaUI: 槽位 " .. slotIndex .. " 有工具: " .. toolToEquip.Name) -- 新增调试
 		if currentlyEquipped ~= toolToEquip then -- 检查当前是否已经装备了该工具
@@ -940,12 +865,14 @@ player.Backpack.ChildAdded:Connect(function(child)
 		updateInventoryUI()
 	end
 end)
+
 player.Backpack.ChildRemoved:Connect(function(child)
 	if child:IsA("Tool") then
 		print("StaminaUI: 背包移除工具: " .. child.Name .. "，更新物品栏。")
 		updateInventoryUI()
 	end
 end)
+
 -- 监听角色子级变化，处理工具装备/卸下
 if character then
 	character.ChildAdded:Connect(function(child)
@@ -962,12 +889,10 @@ if character then
 	end)
 end
 
-
 -- 监听玩家输入
 UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
 	-- 检查是否被游戏处理、是否被脚本阻塞
-	if gameProcessedEvent and input.UserInputType ~= Enum.UserInputType.MouseWheel then return end -- 移除 isInputBlocked 检查，因为输入阻塞应该在 Humanoid:Move() 层面处理
-
+	if gameProcessedEvent and input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
 	if input.KeyCode == Enum.KeyCode.LeftShift then -- 左Shift冲刺
 		sprintKeyHeld = true -- 标记冲刺键被按下
 		print("StaminaUI: LeftShift 按下。")
@@ -993,14 +918,21 @@ UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
 		end
 	elseif input.KeyCode == Enum.KeyCode.CapsLock then -- CAPS LOCK 切换鼠标锁定状态
 		isCameraLocked = not isCameraLocked
-		if isCameraLocked then
-			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-			UserInputService.MouseIconEnabled = false
-			print("StaminaUI: 摄像机锁定，鼠标隐藏。")
+		if humanoid then -- <<<<<< 确保humanoid存在 >>>>>>
+			-- <<<<<< 移除 pcall，因为不再设置 CameraMinZoomDistance/MaxZoomDistance >>>>>>
+			if isCameraLocked then
+				UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+				UserInputService.MouseIconEnabled = false
+				print("StaminaUI: 摄像机锁定，鼠标隐藏 (切换到默认第一人称)。")
+			else
+				UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+				UserInputService.MouseIconEnabled = true
+				print("StaminaUI: 摄像机解锁，鼠标显示 (切换到默认第三人称)。")
+			end
+			-- <<<<<< 移除对 setCameraZoomProperties 的调用 >>>>>>
+			-- setCameraZoomProperties()
 		else
-			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-			UserInputService.MouseIconEnabled = true
-			print("StaminaUI: 摄像机解锁，鼠标显示。")
+			warn("StaminaUI: Humanoid is nil when attempting to change camera properties via CapsLock.")
 		end
 	elseif input.KeyCode == Enum.KeyCode.Space then -- 空格键跳跃
 		if isStunned then
@@ -1011,7 +943,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
 	elseif input.UserInputType == Enum.UserInputType.MouseWheel then
 		local scrollDelta = input.Position.Z -- 鼠标滚轮滚动方向 (正值向上，负值向下)
 		print("StaminaUI: 鼠标滚轮输入检测到。Delta: " .. scrollDelta)
-
 		if scrollDelta > 0 then -- 向上滚动 (格数-1)
 			currentSlotIndex = (currentSlotIndex - 2 + MAX_INVENTORY_SLOTS) % MAX_INVENTORY_SLOTS + 1
 		else -- 向下滚动 (格数+1)
@@ -1021,13 +952,11 @@ UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
 		equipToolInSlot(currentSlotIndex)
 	elseif input.KeyCode == Enum.KeyCode.Right or input.KeyCode == Enum.KeyCode.D then -- 右箭头或D键 (下一个槽位)
 		print("StaminaUI: 键盘右/D键输入检测到。")
-
 		currentSlotIndex = (currentSlotIndex % MAX_INVENTORY_SLOTS) + 1
 		print("StaminaUI: 键盘右/D键选择槽位: " .. currentSlotIndex)
 		equipToolInSlot(currentSlotIndex)
 	elseif input.KeyCode == Enum.KeyCode.Left or input.KeyCode == Enum.KeyCode.A then -- 左箭头或A键 (上一个槽位)
 		print("StaminaUI: 键盘左/A键输入检测到。")
-
 		currentSlotIndex = (currentSlotIndex - 2 + MAX_INVENTORY_SLOTS) % MAX_INVENTORY_SLOTS + 1
 		print("StaminaUI: 键盘左/A键选择槽位: " .. currentSlotIndex)
 		equipToolInSlot(currentSlotIndex)
@@ -1036,8 +965,7 @@ end)
 
 UserInputService.InputEnded:Connect(function(input, gameProcessedEvent)
 	-- 检查是否被游戏处理、是否被脚本阻塞
-	if gameProcessedEvent then return end -- 移除 isInputBlocked 检查
-
+	if gameProcessedEvent then return end
 	if input.KeyCode == Enum.KeyCode.LeftShift then
 		sprintKeyHeld = false -- 标记冲刺键松开
 	elseif input.KeyCode == Enum.KeyCode.W then
@@ -1054,10 +982,8 @@ end)
 -- 每帧检查冲刺状态并消耗体力，并管理速度
 RunService.Heartbeat:Connect(function(deltaTime)
 	if not humanoid then return end -- 确保humanoid存在
-
 	local isMoving = humanoid.MoveDirection.Magnitude > 0
 	local shouldSprint = sprintKeyHeld and isMoving and currentStamina > 0 and not isStunned and not isRolling
-
 	if shouldSprint then
 		if not isSprinting then
 			isSprinting = true
@@ -1070,7 +996,6 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			isSprinting = false
 			print("StaminaUI: 停止冲刺 (Heartbeat)。")
 		end
-
 		-- 只有在不暴冲时才根据眩晕状态恢复速度
 		if not isRolling then
 			if isStunned then
@@ -1084,17 +1009,27 @@ end)
 
 -- 移动向量计算和摄像机更新 (RenderStepped)
 RunService.RenderStepped:Connect(function(deltaTime)
-	if not humanoid or not humanoid.Parent or not Camera or not head then return end
-
+	if not humanoid or not humanoid.Parent or not Camera then return end
 	local rootPart = humanoid.Parent:FindFirstChild("HumanoidRootPart")
 	if not rootPart or not rootPart.CFrame then return end -- Ensure rootPart and its CFrame are valid
 
-	-- Ensure Camera is Scriptable
-	if Camera.CameraType ~= Enum.CameraType.Scriptable then
-		Camera.CameraType = Enum.CameraType.Scriptable
-		Camera.CameraSubject = nil
-		print("StaminaUI: 摄像机类型设置为 Scriptable。")
+	-- Ensure Camera is Custom (default Roblox behavior)
+	if Camera.CameraType ~= Enum.CameraType.Custom then
+		Camera.CameraType = Enum.CameraType.Custom
+		Camera.CameraSubject = humanoid
+		print("StaminaUI: 摄像机类型设置为 Custom。")
 	end
+
+	-- <<<<<< 新增：角色跟随摄像机水平方向旋转 >>>>>>
+	local cameraCFrame = Camera.CFrame
+	local lookVector = cameraCFrame.LookVector
+	-- 获取摄像机的水平朝向，忽略Y轴分量
+	local flatLookVector = Vector3.new(lookVector.X, 0, lookVector.Z).Unit
+
+	-- 创建一个新的CFrame，保持HumanoidRootPart的Y轴位置，并使其Z轴（前方）指向flatLookVector
+	local newCFrame = CFrame.new(rootPart.Position, rootPart.Position + flatLookVector)
+	rootPart.CFrame = newCFrame
+	-- print("StaminaUI: 角色已旋转以跟随摄像机方向。") -- 调试日志，如果太频繁可以注释掉
 
 	-- --- 手动构建原始输入向量 (局部坐标) ---
 	local rawInputVector = Vector3.new(0,0,0)
@@ -1108,19 +1043,8 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		rawInputVector = rawInputVector.Unit
 	end
 
-	-- Handle mouse input for camera rotation (Yaw and Pitch)
-	local yawChange = 0 -- Initialize yawChange
-	if isCameraLocked then
-		local mouseDelta = UserInputService:GetMouseDelta()
-		yawChange = -mouseDelta.X * mouseSensitivity
-
-		-- Update vertical rotation (Pitch) for the camera
-		updatePitch(mouseDelta.Y)
-	end
-
 	local cameraLookVector = Camera.CFrame.LookVector
 	local cameraRightVector = Camera.CFrame.RightVector
-
 	local flatCameraLookVector = Vector3.new(cameraLookVector.X, 0, cameraLookVector.Z).Unit
 	local flatCameraRightVector = Vector3.new(cameraRightVector.X, 0, cameraRightVector.Z).Unit
 
@@ -1131,7 +1055,6 @@ RunService.RenderStepped:Connect(function(deltaTime)
 	if rawInputVector.X ~= 0 then
 		worldMoveVector = worldMoveVector + flatCameraRightVector * rawInputVector.X
 	end
-
 	if worldMoveVector.Magnitude > 0 then
 		worldMoveVector = worldMoveVector.Unit
 	end
@@ -1139,27 +1062,22 @@ RunService.RenderStepped:Connect(function(deltaTime)
 	-- <<<<<< 预移动碰撞检测和移动向量调整 (实现沿墙滑动) >>>>>>
 	local adjustedMoveVector = worldMoveVector
 	local collisionResult = nil
-
 	-- 从HumanoidRootPart中心稍微向上一点的位置发射射线
-	local collisionRayOrigin = rootPart.Position + Vector3.new(0, 0.5, 0) 
+	local collisionRayOrigin = rootPart.Position + Vector3.new(0, 0.5, 0)
 	-- 射线检测距离：略大于当前帧可能移动的距离，加上一个小的缓冲
-	local collisionRayDistance = humanoid.WalkSpeed * deltaTime * 1.5 + 0.1 
+	local collisionRayDistance = humanoid.WalkSpeed * deltaTime * 1.5 + 0.1
 	local collisionRayDirection = worldMoveVector.Unit -- 使用单位向量作为方向
-
 	if collisionRayDirection.Magnitude > 0 then -- 只有当有实际移动意图时才进行射线检测
 		local collisionRaycastParams = RaycastParams.new()
 		collisionRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 		collisionRaycastParams.FilterDescendantsInstances = {character} -- 排除玩家自己的角色
 		collisionRaycastParams.IgnoreWater = true
-
 		collisionResult = workspace:Raycast(collisionRayOrigin, collisionRayDirection * collisionRayDistance, collisionRaycastParams)
-
 		if collisionResult then
 			local hitNormal = collisionResult.Normal
 			-- 将期望的移动向量投影到与碰撞法线垂直的平面上
 			-- 这会移除直接撞向墙壁的移动分量，只保留沿墙滑动的分量
 			adjustedMoveVector = worldMoveVector - (worldMoveVector:Dot(hitNormal)) * hitNormal
-
 			-- 如果投影后的向量非常小，说明是直接撞墙，没有滑动空间
 			if adjustedMoveVector.Magnitude < 0.01 then -- 设定一个阈值
 				adjustedMoveVector = Vector3.new(0,0,0) -- 停止移动
@@ -1169,107 +1087,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
 			print("StaminaUI: 检测到碰撞，正在调整移动向量。原始: " .. tostring(worldMoveVector) .. ", 调整后: " .. tostring(adjustedMoveVector))
 		end
 	end
-
 	humanoid:Move(adjustedMoveVector) -- 使用调整后的向量进行移动
-
-	-- <<<<<< 改进：墙壁互动（防止视角“钻”墙） >>>>>>
-	if isCameraLocked and collisionResult and adjustedMoveVector.Magnitude < 0.01 then -- 角色被墙壁阻挡
-		local hitNormal = collisionResult.Normal
-		local desiredNewLookVector = (rootPart.CFrame * CFrame.Angles(0, math.rad(yawChange), 0)).LookVector
-
-		-- 如果期望的新视角方向显著指向墙壁内部，则阻止旋转
-		-- -0.5 是一个阈值，表示如果新方向与墙壁法线夹角大于90度且深入，则阻止
-		if desiredNewLookVector:Dot(hitNormal) < -0.5 then 
-			yawChange = 0 -- 阻止旋转
-			print("StaminaUI: 阻止了视角旋转进入墙壁。")
-		end
-	end
-	-- 应用水平旋转 (Yaw) 到角色的 HumanoidRootPart
-	rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, math.rad(yawChange), 0)
-
-
-	-- <<<<<< 修改：摄像机位置计算，直接基于Head部件 >>>>>>
-	-- Camera position calculation
-	-- local cameraHeightOffset = humanoid.HeadScale.Value * 0.3 -- 移除此行
-	local cameraForwardOffset = -0.8
-	local cameraRightOffset = 0.2
-
-	-- Calculate the desired camera CFrame based on head.Position and pitch
-	-- 使用Head的实际位置作为垂直基准，结合rootPart的旋转来保持水平方向
-	local baseCameraCFrame = CFrame.new(head.Position.X, head.Position.Y + CAMERA_VERTICAL_OFFSET_FROM_HEAD, head.Position.Z) * rootPart.CFrame.Rotation * CFrame.new(cameraRightOffset, 0, cameraForwardOffset)
-	local cameraCFrameWithPitch = baseCameraCFrame * CFrame.Angles(currentPitch, 0, 0)
-
-	-- Camera collision detection (for camera position)
-	local rayOrigin = rootPart.Position + Vector3.new(0, humanoid.HeadScale.Value * 0.5, 0) -- Ray starts from character's chest/neck area
-	local rayDirection = (cameraCFrameWithPitch.p - rayOrigin).Unit
-	local rayDistance = (cameraCFrameWithPitch.p - rayOrigin).Magnitude
-
-	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = {character} -- Exclude player's own character
-	raycastParams.IgnoreWater = true
-
-	local finalCameraCFrame = cameraCFrameWithPitch -- Start with pitch-adjusted CFrame
-
-	local cameraRaycastResult = workspace:Raycast(rayOrigin, rayDirection * rayDistance, raycastParams)
-	if cameraRaycastResult then
-		-- If ray hits an object, adjust camera position slightly in front of the hit point
-		-- Keep the original rotation from cameraCFrameWithPitch
-		finalCameraCFrame = CFrame.new(cameraRaycastResult.Position - rayDirection * CAMERA_COLLISION_OFFSET) * cameraCFrameWithPitch.Rotation
-	end
-
-	-- Apply jump pitch offset (downward tilt when jumping)
-	if isJumpingState then
-		currentJumpPitchOffset = math.lerp(currentJumpPitchOffset, JUMP_PITCH_AMOUNT, deltaTime * JUMP_PITCH_LERP_SPEED)
-	else
-		currentJumpPitchOffset = math.lerp(currentJumpPitchOffset, 0, deltaTime * JUMP_PITCH_LERP_SPEED)
-	end
-	finalCameraCFrame = finalCameraCFrame * CFrame.Angles(currentJumpPitchOffset, 0, 0)
-
-	-- Apply stun camera effect
-	if isStunned then
-		local elapsed = tick() - stunStartTime
-		local swayAmount = math.sin(elapsed * STUN_FREQUENCY) * STUN_SWAY_AMOUNT 
-		local tiltAmount = math.cos(elapsed * STUN_FREQUENCY * 0.6) * STUN_TILT_AMOUNT 
-		finalCameraCFrame = finalCameraCFrame * CFrame.Angles(tiltAmount, swayAmount, 0)
-	end
-
-	-- Apply head bobbing effect
-	if humanoid.MoveDirection.Magnitude > 0 and not isStunned then
-		headBobTime = headBobTime + deltaTime * bobFrequencyMultiplier
-		local bobX = math.sin(headBobTime * 2) * bobAmplitudeX
-		local bobY = math.abs(math.cos(headBobTime * 4)) * bobAmplitudeY
-		local bobZ = math.sin(headBobTime * 2 + math.pi/2) * bobAmplitudeZ
-
-		local bobOffset = Vector3.new(bobX, bobY, bobZ)
-		finalCameraCFrame = CFrame.new(finalCameraCFrame.p + 
-			finalCameraCFrame.RightVector * bobOffset.X + 
-			finalCameraCFrame.UpVector * bobOffset.Y + 
-			finalCameraCFrame.LookVector * bobOffset.Z) * finalCameraCFrame.Rotation
-	else
-		headBobTime = 0
-	end
-
-	-- <<<<<< 应用跳跃落地冲击效果 (向下冲击，然后向上回弹) >>>>>>
-	if currentLandingVerticalOffset ~= 0 then
-		if currentLandingVerticalOffset < 0 then -- 摄像机向下冲击阶段
-			-- Lerp towards a positive rebound amount (overshoot)
-			currentLandingVerticalOffset = math.lerp(currentLandingVerticalOffset, LANDING_JOLT_REBOUND_AMOUNT, deltaTime * LANDING_JOLT_REBOUND_LERP_SPEED)
-		else -- 摄像机向上回弹并归零阶段
-			currentLandingVerticalOffset = math.lerp(currentLandingVerticalOffset, 0, deltaTime * LANDING_JOLT_REBOUND_LERP_SPEED)
-		end
-
-		-- 将垂直偏移应用到摄像机位置
-		finalCameraCFrame = CFrame.new(finalCameraCFrame.p + finalCameraCFrame.UpVector * currentLandingVerticalOffset) * finalCameraCFrame.Rotation
-
-		-- 如果偏移量非常接近零，则完全归零
-		if math.abs(currentLandingVerticalOffset) < 0.001 then
-			currentLandingVerticalOffset = 0
-		end
-	end
-
-	-- Set Camera CFrame
-	Camera.CFrame = finalCameraCFrame
 end)
 
 print("StaminaUI 客户端脚本已加载完成。")
